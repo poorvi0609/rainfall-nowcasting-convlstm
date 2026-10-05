@@ -1,6 +1,8 @@
 earthaccess
 xarray
 h5netcdf
+h5py
+cftime
 numpy
 matplotlib
 scikit-learn
