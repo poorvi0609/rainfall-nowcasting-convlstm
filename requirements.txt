@@ -1,0 +1,7 @@
+earthaccess
+xarray
+h5netcdf
+numpy
+matplotlib
+scikit-learn
+tensorflow
