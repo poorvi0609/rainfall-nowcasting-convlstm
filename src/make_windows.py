@@ -63,7 +63,7 @@ def main():
     for name, array in splits.items():
         print(name, array.shape)
 
-    np.savez("data/processed/windows.npz", **splits)
+    np.savez_compressed("data/processed/windows.npz", **splits)
 
 
 if __name__ == "__main__":
