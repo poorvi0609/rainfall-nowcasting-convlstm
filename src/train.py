@@ -99,6 +99,9 @@ def main():
     truth = to_mm(y_test)
     evaluate(pred, truth, run_name)
     append_results(f"{args.out}/results.csv", run_name, pred, truth)
+    model.save(f"{args.out}/{run_name}.keras")
+    np.save(f"{args.out}/{run_name}_pred.npy", pred)
+    np.save(f"{args.out}/{run_name}_truth.npy", truth)
 
     with open(f"{args.out}/{run_name}_history.json", "w") as f:
         json.dump(history.history, f)
