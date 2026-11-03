@@ -1,3 +1,4 @@
+import tensorflow as tf
 import argparse
 import json
 import os
@@ -20,6 +21,7 @@ def parse_args():
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--data", default="data/processed/windows.npz")
     parser.add_argument("--out", default="results")
+    parser.add_argument("--heavy_weight", type=float, default=0.0)
     return parser.parse_args()
 
 
@@ -37,11 +39,20 @@ def append_results(path, run_name, pred_mm, truth_mm):
             f.write(f"{run_name},{minutes},{mse(pred, truth):.4f},"
                     f"{csi1:.4f},{pod1:.4f},{csi5:.4f},{pod5:.4f}\n")
 
+def make_weighted_mse(heavy_weight):
+    """MSE that counts pixels with 5+ mm/hr of rain (1 + heavy_weight) times more."""
+    def weighted_mse(y_true, y_pred):
+        rain_mm = tf.math.expm1(y_true)   # undo the log transform
+        is_heavy = tf.cast(rain_mm >= 5.0, tf.float32)
+        weights = 1.0 + heavy_weight * is_heavy
+        return tf.reduce_mean(weights * tf.square(y_pred - y_true))
+    return weighted_mse
+
 
 def main():
     args = parse_args()
     run_name = (f"{args.model}_{args.optimizer}_lr{args.lr}"
-                f"_do{args.dropout}_l2{args.l2}")
+                f"_do{args.dropout}_l2{args.l2}_hw{args.heavy_weight}")
     os.makedirs(args.out, exist_ok=True)
 
     data = np.load(args.data)
@@ -59,7 +70,7 @@ def main():
     else:
         optimizer = keras.optimizers.SGD(learning_rate=args.lr, momentum=0.9)
 
-    model.compile(optimizer=optimizer, loss="mse")
+       model.compile(optimizer=optimizer, loss=make_weighted_mse(args.heavy_weight))
 
     # Stop when validation loss stops improving, and keep the best weights
     early_stop = keras.callbacks.EarlyStopping(
