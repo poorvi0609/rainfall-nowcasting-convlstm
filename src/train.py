@@ -70,7 +70,7 @@ def main():
     else:
         optimizer = keras.optimizers.SGD(learning_rate=args.lr, momentum=0.9)
 
-       model.compile(optimizer=optimizer, loss=make_weighted_mse(args.heavy_weight))
+    model.compile(optimizer=optimizer, loss=make_weighted_mse(args.heavy_weight))
 
     # Stop when validation loss stops improving, and keep the best weights
     early_stop = keras.callbacks.EarlyStopping(
