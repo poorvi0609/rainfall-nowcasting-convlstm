@@ -58,6 +58,8 @@ COLORAXIS = dict(colorscale=RAIN_SCALE, cmin=0, cmax=30,
                  colorbar=dict(title="mm/hr", thickness=12, len=0.85))
 HOVER = "Lat %{y:.2f}, Lon %{x:.2f}<br>Rain: %{z:.1f} mm/hr<extra></extra>"
 PLOT_BG = "#0b1220"
+# Banner rain strength by top alert level: (streak opacity, seconds per loop)
+RAIN_FX = {0: (0.05, 2.0), 1: (0.22, 1.0), 2: (0.32, 0.8), 3: (0.42, 0.6), 4: (0.50, 0.45)}
 
 
 def to_pixel(lat, lon):
@@ -75,6 +77,7 @@ def city_rain(frame, row, col):
 
 
 def level_of(rain):
+    rain = round(float(rain), 1)   # match the one-decimal value people see on screen
     chosen = LEVELS[0]
     for level in LEVELS:
         if rain >= level["min"]:
@@ -159,37 +162,62 @@ def map_figure(frame):
     return fig
 
 
-def replay_figure(pred, truth, start, n_frames=12):
+SUBSTEPS = 3   # blended frames between two real 30-minute snapshots
+
+
+def blend(a, b, t):
+    return a * (1 - t) + b * t
+
+
+def replay_figure(pred, truth, start, n_frames=12, frame_ms=180):
     ks = list(range(start, min(start + n_frames, len(pred))))
+    labels = {kk: ist_label(issue_time(kk) + timedelta(minutes=30)) for kk in ks}
+
+    def title(kk):
+        return dict(text=f"<b>{labels[kk]}</b>", x=0.5, font=dict(size=18))
+
     fig = make_subplots(rows=1, cols=2, horizontal_spacing=0.06,
                         subplot_titles=("What actually happened", "Model forecast"))
     fig.add_trace(rain_heatmap(truth[ks[0], 0]), row=1, col=1)
     fig.add_trace(rain_heatmap(pred[ks[0], 0]), row=1, col=2)
     fig.add_trace(city_dots(), row=1, col=1)
     fig.add_trace(city_dots(), row=1, col=2)
-    labels = [ist_label(issue_time(kk) + timedelta(minutes=30)) for kk in ks]
-    fig.frames = [go.Frame(name=lab, traces=[0, 1],
-                           data=[rain_heatmap(truth[kk, 0]), rain_heatmap(pred[kk, 0])])
-                  for kk, lab in zip(ks, labels)]
-    style(fig, 520)
-    fig.update_xaxes(range=[70, 76], showgrid=False)
-    fig.update_yaxes(range=[16, 22], showgrid=False)
+
+    frames, steps = [], []
+    for i, kk in enumerate(ks):
+        nxt = ks[i + 1] if i + 1 < len(ks) else None
+        for sub in range(SUBSTEPS if nxt is not None else 1):
+            t = sub / SUBSTEPS
+            obs = blend(truth[kk, 0], truth[nxt, 0], t) if nxt is not None else truth[kk, 0]
+            fcst = blend(pred[kk, 0], pred[nxt, 0], t) if nxt is not None else pred[kk, 0]
+            name = f"{kk}-{sub}"
+            frames.append(go.Frame(name=name, traces=[0, 1],
+                                   data=[rain_heatmap(obs), rain_heatmap(fcst)],
+                                   layout=go.Layout(title=title(kk))))
+            if sub == 0:
+                steps.append(dict(method="animate", label=labels[kk][-8:],
+                                  args=[[name], dict(mode="immediate", transition=dict(duration=0),
+                                                     frame=dict(duration=0, redraw=True))]))
+    fig.frames = frames
+
+    style(fig, 540)
+    fig.update_xaxes(range=[70, 76], showgrid=False, constrain="domain")
+    fig.update_yaxes(range=[16, 22], showgrid=False, constrain="domain")
     fig.update_yaxes(scaleanchor="x", row=1, col=1)
     fig.update_yaxes(scaleanchor="x2", row=1, col=2)
-    play = dict(frame=dict(duration=700, redraw=True), fromcurrent=True, transition=dict(duration=0))
+    play = dict(frame=dict(duration=frame_ms, redraw=True), fromcurrent=True,
+                transition=dict(duration=0))
     pause = dict(frame=dict(duration=0, redraw=False), mode="immediate", transition=dict(duration=0))
     fig.update_layout(
-        margin=dict(l=10, r=10, t=50, b=70),
-        updatemenus=[dict(type="buttons", direction="left", x=0.0, y=-0.02, xanchor="left",
-                          yanchor="top", pad=dict(t=10),
+        title=title(ks[0]),
+        margin=dict(l=10, r=10, t=90, b=120),
+        updatemenus=[dict(type="buttons", direction="left", x=0.0, y=-0.14, xanchor="left",
+                          yanchor="top", pad=dict(t=10), bgcolor="#1f2a44",
+                          bordercolor="#4a5a80", font=dict(color="#ffffff"),
                           buttons=[dict(label="▶ Play", method="animate", args=[None, play]),
                                    dict(label="⏸ Pause", method="animate", args=[[None], pause])])],
-        sliders=[dict(active=0, x=0.18, len=0.8, y=-0.02, yanchor="top", pad=dict(t=10),
-                      currentvalue=dict(prefix="Time (IST): "),
-                      steps=[dict(method="animate", label=lab[-8:],
-                                  args=[[lab], dict(mode="immediate", transition=dict(duration=0),
-                                                    frame=dict(duration=0, redraw=True))])
-                             for lab in labels])])
+        sliders=[dict(active=0, x=0.18, len=0.8, y=-0.14, yanchor="top", pad=dict(t=10),
+                      currentvalue=dict(prefix="Snapshot (IST): "), steps=steps)])
     return fig
 
 
@@ -250,24 +278,31 @@ def join_names(names):
 
 CSS = """
 <style>
-.block-container {padding-top: 1.4rem; max-width: 1250px;}
+.block-container {padding-top: 4rem; max-width: 1250px;}
 footer {visibility: hidden;}
 .hero {position: relative; overflow: hidden; border-radius: 18px; padding: 26px 32px;
        margin-bottom: 18px; color: #fff;
        background: linear-gradient(135deg, #0f2027 0%, #203a43 50%, #2c5364 100%);}
-.hero::before {content: ""; position: absolute; inset: 0; opacity: .30;
-       background-image: linear-gradient(100deg, transparent 46%, rgba(255,255,255,.55) 50%, transparent 54%);
-       background-size: 26px 64px; animation: fall .8s linear infinite;}
+.hero::before {content: ""; position: absolute; inset: 0; opacity: var(--rain-op, .3);
+       background-image: linear-gradient(100deg, transparent 46%, rgba(255,255,255,.6) 50%, transparent 54%),
+                         linear-gradient(100deg, transparent 68%, rgba(255,255,255,.35) 70%, transparent 72%);
+       background-size: 26px 64px, 41px 110px; background-position: 0 0, 0 0;
+       animation: fall var(--rain-speed, .8s) linear infinite;}
+.hero.storm::after {content: ""; position: absolute; inset: 0; background: #fff; opacity: 0;
+       pointer-events: none; animation: flash 5s infinite;}
 .hero > * {position: relative; z-index: 1;}
 .hero-title {font-size: 2.3rem; font-weight: 800; letter-spacing: .5px;}
 .hero-sub {font-size: 1.05rem; opacity: .92; margin-top: 4px;}
 .hero-tag {display: inline-block; margin-top: 12px; padding: 4px 12px; border-radius: 20px;
        background: rgba(255,255,255,.16); font-size: .85rem;}
-@keyframes fall {from {background-position: 0 0;} to {background-position: -26px 64px;}}
+@keyframes fall {from {background-position: 0 0, 0 0;} to {background-position: -26px 64px, -41px 110px;}}
+@keyframes flash {0%, 88%, 100% {opacity: 0;} 89% {opacity: .28;} 90% {opacity: .02;}
+       91% {opacity: .2;} 93% {opacity: 0;}}
+@media (prefers-reduced-motion: reduce) {.hero::before, .hero.storm::after, .card.pulse {animation: none;}}
 .status {border-radius: 14px; padding: 14px 20px; margin: 6px 0 16px; font-size: 1.15rem;
        font-weight: 600; border-left: 8px solid var(--c);}
-.grid {display: grid; grid-template-columns: repeat(auto-fit, minmax(185px, 1fr));
-       gap: 14px; margin-bottom: 18px;}
+.grid {display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 18px;}
+@media (min-width: 1400px) {.grid {grid-template-columns: repeat(6, 1fr);}}
 .card {background: linear-gradient(160deg, #101a2e 0%, #0b1220 100%); border-radius: 16px;
        padding: 14px 16px; color: #fff; border-top: 5px solid var(--c);
        box-shadow: 0 4px 14px rgba(0,0,0,.25);}
@@ -301,11 +336,7 @@ if n != N_WINDOWS - FIRST_TEST:
     st.warning(f"Expected {N_WINDOWS - FIRST_TEST} test windows but found {n}. Times may be off.")
 
 first_day, last_day = to_ist(issue_time(0)), to_ist(issue_time(n - 1))
-st.markdown(
-    f"""<div class="hero"><div class="hero-title">🌧️ Rain Watch</div>
-    <div class="hero-sub">Rain warnings for the next hour along the Maharashtra coast, made by an AI model</div>
-    <div class="hero-tag">Demo replay of {first_day:%d %b} to {last_day:%d %b %Y} · all times in IST</div></div>""",
-    unsafe_allow_html=True)
+hero_slot = st.empty()
 
 # ---------- controls ----------
 col_time, col_lead, col_jump = st.columns([3, 2, 2])
@@ -350,6 +381,15 @@ else:
 st.markdown(f'<div class="status" style="--c:{top_level["colour"]}; background:{top_level["colour"]}26">'
             f'{headline}</div>', unsafe_allow_html=True)
 
+rain_op, rain_speed = RAIN_FX[top]
+storm_class = " storm" if top >= 3 else ""
+hero_slot.markdown(
+    f"""<div class="hero{storm_class}" style="--rain-op:{rain_op}; --rain-speed:{rain_speed}s">
+    <div class="hero-title">🌧️ Rain Watch</div>
+    <div class="hero-sub">Rain warnings for the next hour along the Maharashtra coast, made by an AI model</div>
+    <div class="hero-tag">Demo replay · {first_day:%d %b} to {last_day:%d %b} · all times in IST</div></div>""",
+    unsafe_allow_html=True)
+
 # ---------- city cards ----------
 cards = ""
 for name in CITIES:
@@ -391,10 +431,13 @@ with tab_map:
 with tab_replay:
     st.write("Watch six hours of rain unfold, observed on the left and forecast on the right. "
              "Press play, or drag the slider.")
+    speed = st.radio("Speed", ["Slow", "Normal", "Fast"], index=1, horizontal=True)
     start = min(k, max(n - 12, 0))
-    st.plotly_chart(replay_figure(pred, truth, start))
+    st.plotly_chart(replay_figure(pred, truth, start,
+                                  frame_ms={"Slow": 320, "Normal": 180, "Fast": 90}[speed]))
     st.caption("The replay starts at the moment picked above. The forecast on the right is each "
-               "frame's 30-minute-ahead prediction.")
+               "moment's 30-minute-ahead prediction. Movement between the half-hourly snapshots "
+               "is blended so it looks smooth.")
 
 with tab_time:
     city = st.selectbox("City", list(CITIES), index=1)
